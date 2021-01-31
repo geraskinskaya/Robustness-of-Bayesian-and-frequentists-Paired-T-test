@@ -1,0 +1,187 @@
+library(sn)
+library(BayesFactor)
+library(ggplot2)
+set.seed(123)
+mu<-0
+DM<-matrix(nrow = 12000, ncol = 100, byrow = TRUE)
+sim_par_T<- expand.grid (repetition = 1:100,
+                         effect_size = c(0,  0.6),
+                         skew = c("no skew","skew"),
+                         sample_size = c (10,30,100),
+                         stringsAsFactors = TRUE
+)
+nsim<-nrow(sim_par_T)
+n<-0
+##function for creating sample of differences between the samples
+Simulate_Data<- function(effect_size, skew, sample_size) {
+  n <- sample_size 
+  mu<-effect_size
+  if (skew == "no skew") {
+    mu + rnorm(n,  0,  1)  
+  } else { 
+    tmp1 <- sn::rst(n, xi = 0, omega = 1, alpha = 30)
+    tmp2 <- rnorm(n, 0, 1)
+    mu + tmp1 - mean(tmp1) + mean(tmp2)
+  }
+}
+
+##simulation
+for (i in 1:nsim){
+  effect_size <- sim_par_T$effect_size[i]
+  skew <- sim_par_T$skew[i]
+  sample_s <- sim_par_T$sample_size[i]
+  for (j in 1:100){
+    DM[i, j]<- Simulate_Data(effect_size = effect_size, skew = skew, sample_size = sample_s) [j]
+  }
+}
+t<-c()
+##function for returning frequentist decision
+Fit_Freq<- function (x, sample_size){
+  t<- t.test(x = x, n = sample_size, alternative = "two.sided", mu = 0,  conf.level = 0.95)
+  if (t$p.value < 0.025) {
+    return("HA")
+  } else if ( t$p.value > 0.025) {
+    return("H0")
+  }
+}
+
+##function for returning t-statistic and p-value
+ST<-numeric()
+T_stat<-function(x, sample_size){
+  t<- t.test(x = x, n = sample_size, alternative = "two.sided", mu = 0,  conf.level = 0.95)
+  ST<-t$statistic
+  p.val<-t$p.value
+  o<- cbind(ST, p.val)
+  return(o)
+}
+
+##function for normality manipulation check
+shapit<-function(x){
+ s<-shapiro.test(x) 
+ if (s$p.value > 0.05) {
+   return("normal")
+ } else {
+   return("non-normal")
+ }
+}
+  
+
+for(i in 1:nsim){
+  x<- DM[i, !is.na(DM[i, 1:100])]
+  sample_size<- sim_par_T$sample_size[i]
+  Fit_Freq(x = x, sample_size = sample_size)
+  sim_par_T$Freq.hyp[i] <-  Fit_Freq(x = x, sample_size = sample_size)
+  STP<-T_stat (x = x, sample_size = sample_size)
+  sim_par_T$M[i]<- me(x = x)
+  sim_par_T$ST[i]<- STP[1]
+  sim_par_T$P[i] <-STP[2]
+  sim_par_T$Shapiro[i] <-shapit(x = x)
+}
+
+##function for returning Bayesian decision
+b<-c()
+Fit_Bayes <- function (st, sample_size){
+  b<-ttest.tstat(t = st, n1 = sample_size, simple = TRUE)
+  if ( b>1 ) {
+    return("HA")
+  } else if (b< 1) {
+    return("H0")
+  }
+}
+
+##function to return the Bayes factor
+BF<-function (st, sample_size){
+  bf<-ttest.tstat(t = st, n1 = sample_size, simple = TRUE)
+  return(bf)
+}  
+for (i in 1:nsim){
+  stat<- sim_par_T$ST[i]
+  SS<-sim_par_T$sample_size[i]
+  sim_par_T$Bayes.hyp[i]<- Fit_Bayes(st = stat, sample_size = SS)
+  sim_par_T$BF[i] <- BF(st = stat, sample_size = SS)
+}
+
+##creating results table
+freq  <- table(sim_par_T$Freq.hyp, sim_par_T$skew, sim_par_T$sample_size, sim_par_T$effect_size)/100
+bayes <- table(sim_par_T$Bayes.hyp, sim_par_T$skew, sim_par_T$sample_size, sim_par_T$effect_size)/100
+
+
+results <- data.frame(
+  "Frequentist" = freq,
+  "Bayes" = bayes
+)
+
+names(results)[names(results) == "Frequentist.Var1"] <- "hypothesis"
+names(results)[names(results) == "Frequentist.Var2"] <- "skew"
+names(results)[names(results) == "Frequentist.Var3"] <- "sample_size"
+names(results)[names(results) == "Frequentist.Var4"] <- "effect_size"
+names(results)[names(results) == "Frequentist.Freq"] <- "proportion"
+
+names(results)[names(results) == "Bayes.Var1"] <- "hypothesis"
+names(results)[names(results) == "Bayes.Var2"] <- "skew"
+names(results)[names(results) == "Bayes.Var3"] <- "sample_size"
+names(results)[names(results) == "Bayes.Var4"] <- "effect_size"
+names(results)[names(results) == "Bayes.Freq"] <- "proportion"
+
+
+
+step1<-results[1:12,]
+step2<- step1[results$hypothesis != "H0",]
+step3<- step2[1:6,]
+step4<- step3[,1:5] 
+step5<-step3[,6:10]
+approach<- c("Frequentist","Frequentist","Frequentist","Frequentist","Frequentist","Frequentist","Bayesian","Bayesian","Bayesian","Bayesian","Bayesian","Bayesian")
+ass<- c("normal distribution", "skewed distribution")
+assumptions<- rep(ass, 6)
+step6<-rbind(step4, step5)
+type1er<-cbind(step6, approach, assumptions)
+sD<-sqrt(type1er$proportion*(1-type1er$proportion))
+sE<-sD/sqrt(100)
+type1er<-cbind(type1er, sE)
+
+type1<-ggplot(data = type1er, aes(x = sample_size, y = proportion, group = assumptions)) +geom_line(aes(x = sample_size, y = proportion, colour =assumptions), size = 1) +geom_point(aes(x = sample_size, y = proportion, colour = assumptions)) + geom_errorbar(aes(ymin=proportion-sE, ymax=proportion+sE, colour = assumptions), size = 1, width=.05)
+type1<- type1 + facet_grid(assumptions~approach) + xlab("Sample Size") +ylab("Type I Error Rate") +theme_bw()
+type1
+
+step1<-results[13:24,]
+step2<-step1[results$hypothesis != "H0",]
+step3<-step2[1:6,]
+step4<-step3[,1:5]
+step5<-step3[,6:10]
+approach<- c("Frequentist","Frequentist","Frequentist","Frequentist","Frequentist","Frequentist","Bayesian","Bayesian","Bayesian","Bayesian","Bayesian","Bayesian")
+ass<- c("normal distribution", "skewed distribution")
+assumptions<- rep(ass, 6)
+step6<-rbind(step4, step5)
+Power<-cbind(step6, approach, assumptions)
+sD<-sqrt(Power$proportion*(1-Power$proportion))
+sE<-sD/sqrt(100)
+Power<-cbind(Power, sE)
+Pow<-ggplot(data = Power, aes(x = sample_size, y = proportion, group = assumptions)) +geom_line(aes(x = sample_size, y = proportion, colour =assumptions), size = 1) +geom_point(aes(x = sample_size, y = proportion, colour = assumptions)) + geom_errorbar(aes(ymin=proportion-sE, ymax=proportion+sE, colour = assumptions), size = 1, width=.05)
+Pow<- Pow + facet_grid(assumptions~approach) + xlab("Sample Size") +ylab("Power Rate") +theme_bw()
+Pow
+
+
+histt1<-sim_par_T
+
+sampling<- ggplot(histt1, aes(x=histt1$M)) + geom_histogram()
+sampling<- sampling + facet_grid(effect_size~skew~sample_size) + xlab("Distribution of Means")
+
+
+P_values<- ggplot(histt1, aes(x=histt1$P)) + geom_histogram()
+P_values<- P_values + facet_grid(skew~effect_size) + xlab("Distribution of P-values")
+
+
+BF<- ggplot(histt1, aes(x=log(histt1$BF))) + geom_histogram()
+BF<- BF + facet_grid(skew~effect_size) + xlab("Distribution of BF") +xlim(-5, 40)
+
+##creating table for manipulation check results
+shapiro <- table(sim_par_T$Shapiro, sim_par_T$skew, sim_par_T$sample_size)/200
+
+Manipulation.norm<- data.frame(
+  "Normalit" = shapiro
+)
+
+names(Manipulation.norm)[names(Manipulation.norm) == "Normalit.Var1"] <- "Shapiro"
+names(Manipulation.norm)[names(Manipulation.norm) == "Normalit.Var2"] <- "skew"
+names(Manipulation.norm)[names(Manipulation.norm) == "Normalit.Var3"] <- "sample size"
+names(Manipulation.norm)[names(Manipulation.norm) == "Normalit.Freq"] <- "proportion"
